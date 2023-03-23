@@ -16,25 +16,21 @@ def split_all(split, *tensors):
 
 
 
-def ce_p(left, right, mask, rix):
+def ce_p(left, right, lix, rix):
     """
     left : L x D
     right : R x D
-    mask : L
-    rix : L
+    lix : ? (Row-indices for correct class)
+    rix : ? (Col-indices for correct class)
     
     out: 2 x L
     """
     
     scores = left @ right.t()
-    ret = scores.new_empty((2, left.shape[0]))
+    ret = scores.new_zeros((2, left.shape[0]))
     
     ret[0] = scores.logsumexp(1)
-    ret[1] = torch.where(
-        mask,
-        scores.gather(1, rix.unsqueeze(1)).squeeze(),
-        0
-    )
+    ret[1, lix] = scores[lix, rix]
     
     return ret
 
@@ -81,13 +77,9 @@ class FlashCE(torch.autograd.Function):
                     bix = 1
                 tshift = t - r_start
                 mask = (0 <= tshift) & (tshift < r_size)
-                rix = torch.where(
-                    mask,
-                    tshift,
-                    0
-                )
-
-                buffer[bix] = ce_p(l, r, mask, rix)
+                lix = torch.arange(l_size)[mask]
+                rix = tshift[mask]
+                buffer[bix] = ce_p(l, r, lix, rix)
                 bix += 1
             wn[:, l_start:l_start+l_size] = ce_fold(buffer[:bix])
 
@@ -127,7 +119,7 @@ class FlashCE(torch.autograd.Function):
         
         return ret_dl, ret_dr, None, None, None, None
     
-def ce(left, right, truth, lsplit=1024, rsplit=1024, fold_at=2):
+def ce(left, right, truth, lsplit=512, rsplit=512, fold_at=16):
     ret, _ = FlashCE.apply(left, right, truth, lsplit, rsplit, fold_at)
     return ret
 
